@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "sensor_registry.c"
+        "i2c_manager.c"
+        "adc_manager.c"
+        "sensor_dht22.c"
+        "sensor_mlx90614.c"
+        "sensor_max30102.c"
+        "sensor_ky037.c"
+        "sensor_mq2.c"
+        "sensor_adxl345.c"
+        "display_ssd1306.c"
+    INCLUDE_DIRS
+        "."
+        "include"
+)
