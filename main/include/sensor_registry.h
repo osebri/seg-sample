@@ -4,23 +4,38 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sensor_max30102.h"
 
 typedef enum {
     SENSOR_ID_DHT22 = 0,
     SENSOR_ID_MLX90614,
     SENSOR_ID_MAX30102,
     SENSOR_ID_KY037,
-    SENSOR_ID_MQ2,
+    SENSOR_ID_MQ135,
     SENSOR_ID_ADXL345,
     SENSOR_ID_OLED,
     SENSOR_ID_COUNT
 } sensor_id_t;
 
+typedef enum {
+    SENSOR_STATE_INIT_FAILED = 0,
+    SENSOR_STATE_WAITING_FIRST_SAMPLE,
+    SENSOR_STATE_WARMING_UP,
+    SENSOR_STATE_HEALTHY,
+    SENSOR_STATE_STALE,
+    SENSOR_STATE_ERROR,
+    SENSOR_STATE_ABSENT_OPTIONAL,
+} sensor_state_t;
+
 typedef struct {
     bool initialized;
-    bool healthy;
+    bool optional;
+    sensor_state_t state;
     esp_err_t last_error;
-    int64_t last_update_us;
+    int64_t last_attempt_us;
+    int64_t last_success_us;
+    int64_t stale_after_us;
+    uint32_t consecutive_failures;
 } sensor_status_t;
 
 typedef struct {
@@ -32,9 +47,21 @@ typedef struct {
 
     uint32_t max30102_red;
     uint32_t max30102_ir;
+    int32_t max30102_sample_age_ms;
+    uint32_t max30102_samples_drained;
+    sensor_max30102_signal_hint_t max30102_signal_hint;
+    bool max30102_heart_rate_valid;
+    uint16_t max30102_heart_rate_bpm;
+    uint8_t max30102_heart_rate_confidence_pct;
 
-    int ky037_raw;
-    int mq2_raw;
+    int ky037_activity_pct;
+    int ky037_peak_to_peak;
+    int ky037_mean_abs_deviation;
+
+    int mq135_filtered_raw;
+    int mq135_baseline_raw;
+    int mq135_delta_raw;
+    int mq135_response_pct;
 
     float adxl_x_g;
     float adxl_y_g;
@@ -46,16 +73,38 @@ typedef struct {
 
 void sensor_registry_init(void);
 const char *sensor_registry_name(sensor_id_t sensor_id);
+const char *sensor_registry_state_name(sensor_state_t state);
 
-void sensor_registry_set_init_status(sensor_id_t sensor_id, bool initialized, esp_err_t init_error);
-void sensor_registry_mark_error(sensor_id_t sensor_id, esp_err_t error_code);
-void sensor_registry_mark_ok(sensor_id_t sensor_id);
+void sensor_registry_configure(sensor_id_t sensor_id, bool optional, int64_t stale_after_us);
+void sensor_registry_set_init_result(sensor_id_t sensor_id, esp_err_t init_error, sensor_state_t failure_state);
+void sensor_registry_note_attempt(sensor_id_t sensor_id);
+void sensor_registry_set_state(sensor_id_t sensor_id, sensor_state_t state, esp_err_t error_code);
+void sensor_registry_record_failure(sensor_id_t sensor_id, sensor_state_t state, esp_err_t error_code);
+void sensor_registry_update_oled(sensor_state_t state, esp_err_t error_code);
 
-void sensor_registry_update_dht22(float temp_c, float humidity_pct, esp_err_t error_code);
-void sensor_registry_update_mlx90614(float object_temp_c, float ambient_temp_c, esp_err_t error_code);
-void sensor_registry_update_max30102(uint32_t red, uint32_t ir, esp_err_t error_code);
-void sensor_registry_update_ky037(int raw_value, esp_err_t error_code);
-void sensor_registry_update_mq2(int raw_value, esp_err_t error_code);
-void sensor_registry_update_adxl345(float x_g, float y_g, float z_g, esp_err_t error_code);
+void sensor_registry_update_dht22(float temp_c, float humidity_pct, sensor_state_t state);
+void sensor_registry_update_mlx90614(float object_temp_c, float ambient_temp_c, sensor_state_t state);
+void sensor_registry_update_max30102(uint32_t red,
+                                     uint32_t ir,
+                                     uint32_t sample_age_ms,
+                                     uint32_t samples_drained,
+                                     sensor_max30102_signal_hint_t signal_hint,
+                                     bool heart_rate_valid,
+                                     uint16_t heart_rate_bpm,
+                                     uint8_t heart_rate_confidence_pct,
+                                     sensor_state_t state);
+void sensor_registry_update_max30102_runtime(uint32_t sample_age_ms,
+                                             uint32_t samples_drained,
+                                             sensor_max30102_signal_hint_t signal_hint,
+                                             bool heart_rate_valid,
+                                             uint16_t heart_rate_bpm,
+                                             uint8_t heart_rate_confidence_pct);
+void sensor_registry_update_ky037(int activity_pct, int peak_to_peak, int mean_abs_deviation, sensor_state_t state);
+void sensor_registry_update_mq135(int filtered_raw,
+                                  int baseline_raw,
+                                  int delta_raw,
+                                  int response_pct,
+                                  sensor_state_t state);
+void sensor_registry_update_adxl345(float x_g, float y_g, float z_g, sensor_state_t state);
 
 void sensor_registry_get_snapshot(sensor_snapshot_t *out_snapshot);

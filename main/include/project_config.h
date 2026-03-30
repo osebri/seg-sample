@@ -1,7 +1,7 @@
 #pragma once
 
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_types.h"
 
 #define I2C_MASTER_PORT I2C_NUM_0
 #define I2C_MASTER_SDA_GPIO GPIO_NUM_21
@@ -12,7 +12,8 @@
 #define DHT22_DATA_GPIO GPIO_NUM_4
 
 #define KY037_ADC_GPIO GPIO_NUM_34
-#define MQ2_ADC_GPIO GPIO_NUM_35
+#define MQ135_ADC_GPIO GPIO_NUM_35
+#define MQ2_ADC_GPIO MQ135_ADC_GPIO
 
 #define MLX90614_I2C_ADDR 0x5A
 #define MAX30102_I2C_ADDR 0x57

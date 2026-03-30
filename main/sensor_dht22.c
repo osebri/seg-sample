@@ -1,7 +1,6 @@
-//Some of the code here could be dead or inappropriate
-// Delete once sensor usage has been understood
 #include "sensor_dht22.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_log.h"
@@ -18,12 +17,27 @@ static const char *TAG = "sensor_dht22";
 #define DHT22_STARTUP_SETTLE_US (2500000)
 #define DHT22_RESPONSE_TIMEOUT_US (400)
 #define DHT22_BIT_TIMEOUT_US (260)
+#define DHT22_TEMP_JUMP_C (5.0f)
+#define DHT22_HUM_JUMP_PCT (20.0f)
+#define DHT22_OUTLIER_CONFIRM_TEMP_C (1.5f)
+#define DHT22_OUTLIER_CONFIRM_HUM_PCT (6.0f)
 
 static gpio_num_t s_data_pin = GPIO_NUM_NC;
 static int64_t s_last_read_us;
 static int64_t s_ready_after_us;
 static portMUX_TYPE s_dht_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_reported_dht11_mode;
+static bool s_have_last_accepted;
+static bool s_have_pending_outlier;
+static float s_last_temp_c;
+static float s_last_humidity_pct;
+static float s_pending_temp_c;
+static float s_pending_humidity_pct;
+
+static bool dht22_diff_exceeds(float lhs, float rhs, float threshold)
+{
+    return (lhs > (rhs + threshold)) || (lhs < (rhs - threshold));
+}
 
 static esp_err_t dht22_wait_idle_high(uint32_t timeout_us)
 {
@@ -141,12 +155,12 @@ exit_read:
         temp = -temp;
     }
 
-    // Some modules sold as DHT22 are DHT11-compatible parts; decode fallback format when needed.
     if (humidity > 100.0f || humidity < 0.0f || temp > 85.0f || temp < -40.0f) {
         float dht11_humidity = (float)data[0] + ((float)data[1] * 0.1f);
         float dht11_temp = (float)data[2] + ((float)data[3] * 0.1f);
 
-        if (dht11_humidity >= 0.0f && dht11_humidity <= 100.0f && dht11_temp >= -20.0f && dht11_temp <= 80.0f) {
+        if (dht11_humidity >= 0.0f && dht11_humidity <= 100.0f &&
+            dht11_temp >= -20.0f && dht11_temp <= 80.0f) {
             humidity = dht11_humidity;
             temp = dht11_temp;
             if (!s_reported_dht11_mode) {
@@ -187,6 +201,12 @@ esp_err_t sensor_dht22_init(gpio_num_t data_pin)
     s_last_read_us = 0;
     s_ready_after_us = esp_timer_get_time() + DHT22_STARTUP_SETTLE_US;
     s_reported_dht11_mode = false;
+    s_have_last_accepted = false;
+    s_have_pending_outlier = false;
+    s_last_temp_c = 0.0f;
+    s_last_humidity_pct = 0.0f;
+    s_pending_temp_c = 0.0f;
+    s_pending_humidity_pct = 0.0f;
     ESP_LOGI(TAG, "DHT22 initialized on GPIO%d", s_data_pin);
     return ESP_OK;
 }
@@ -217,15 +237,38 @@ esp_err_t sensor_dht22_read(float *temp_c, float *humidity_pct)
     };
 
     for (int attempt = 0; attempt < 4; ++attempt) {
-        esp_err_t err = dht22_read_once(temp_c, humidity_pct, start_pulses_ms[attempt]);
+        float sample_temp_c = 0.0f;
+        float sample_humidity_pct = 0.0f;
+        esp_err_t err = dht22_read_once(&sample_temp_c, &sample_humidity_pct, start_pulses_ms[attempt]);
         if (err == ESP_OK) {
+            if (s_have_last_accepted &&
+                (dht22_diff_exceeds(sample_temp_c, s_last_temp_c, DHT22_TEMP_JUMP_C) ||
+                 dht22_diff_exceeds(sample_humidity_pct, s_last_humidity_pct, DHT22_HUM_JUMP_PCT))) {
+                if (!(s_have_pending_outlier &&
+                      !dht22_diff_exceeds(sample_temp_c, s_pending_temp_c, DHT22_OUTLIER_CONFIRM_TEMP_C) &&
+                      !dht22_diff_exceeds(sample_humidity_pct,
+                                          s_pending_humidity_pct,
+                                          DHT22_OUTLIER_CONFIRM_HUM_PCT))) {
+                    s_have_pending_outlier = true;
+                    s_pending_temp_c = sample_temp_c;
+                    s_pending_humidity_pct = sample_humidity_pct;
+                    return ESP_ERR_INVALID_RESPONSE;
+                }
+            }
+
+            s_have_pending_outlier = false;
+            s_have_last_accepted = true;
+            s_last_temp_c = sample_temp_c;
+            s_last_humidity_pct = sample_humidity_pct;
             s_last_read_us = esp_timer_get_time();
+            *temp_c = sample_temp_c;
+            *humidity_pct = sample_humidity_pct;
             return ESP_OK;
         }
+
         last_err = err;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 
-    ESP_LOGW(TAG, "DHT22 read failed: %s", esp_err_to_name(last_err));
     return last_err;
 }

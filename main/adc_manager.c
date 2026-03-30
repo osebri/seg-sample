@@ -47,13 +47,13 @@ esp_err_t adc_manager_init(void)
     }
 
     adc_unit_t mq2_unit = ADC_UNIT_1;
-    err = adc_oneshot_io_to_channel(MQ2_ADC_GPIO, &mq2_unit, &s_mq2_channel);
+    err = adc_oneshot_io_to_channel(MQ135_ADC_GPIO, &mq2_unit, &s_mq2_channel);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to map MQ2 GPIO%d to ADC channel: %s", MQ2_ADC_GPIO, esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to map MQ135 GPIO%d to ADC channel: %s", MQ135_ADC_GPIO, esp_err_to_name(err));
         return err;
     }
     if (mq2_unit != ADC_UNIT_1) {
-        ESP_LOGE(TAG, "MQ2 GPIO%d mapped to non-ADC1 unit, unsupported in this project", MQ2_ADC_GPIO);
+        ESP_LOGE(TAG, "MQ135 GPIO%d mapped to non-ADC1 unit, unsupported in this project", MQ135_ADC_GPIO);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -70,10 +70,10 @@ esp_err_t adc_manager_init(void)
     s_adc_initialized = true;
 
     ESP_LOGI(TAG,
-             "ADC initialized (oneshot, 12-bit, 12dB) KY037 GPIO%d->CH%d, MQ2 GPIO%d->CH%d",
+             "ADC initialized (oneshot, 12-bit, 12dB) KY037 GPIO%d->CH%d, MQ135 GPIO%d->CH%d",
              KY037_ADC_GPIO,
              (int)s_ky037_channel,
-             MQ2_ADC_GPIO,
+             MQ135_ADC_GPIO,
              (int)s_mq2_channel);
     return ESP_OK;
 }

@@ -17,8 +17,10 @@ static const char *TAG = "display_ssd1306";
 #define SSD1306_PAGES (SSD1306_HEIGHT / 8)
 
 static bool s_initialized;
+static bool s_has_presented_frame;
 static uint8_t s_i2c_addr = SSD1306_I2C_ADDR;
 static uint8_t s_framebuffer[SSD1306_WIDTH * SSD1306_PAGES];
+static uint8_t s_last_presented_frame[SSD1306_WIDTH * SSD1306_PAGES];
 
 static const uint8_t s_candidate_addresses[] = {
     SSD1306_I2C_ADDR,
@@ -33,6 +35,7 @@ typedef struct {
 static const glyph_3x5_t s_glyphs[] = {
     {' ', {0b000, 0b000, 0b000, 0b000, 0b000}},
     {'%', {0b101, 0b001, 0b010, 0b100, 0b101}},
+    {'+', {0b000, 0b010, 0b111, 0b010, 0b000}},
     {'-', {0b000, 0b000, 0b111, 0b000, 0b000}},
     {'.', {0b000, 0b000, 0b000, 0b000, 0b010}},
     {'0', {0b111, 0b101, 0b101, 0b101, 0b111}},
@@ -50,20 +53,59 @@ static const glyph_3x5_t s_glyphs[] = {
     {'C', {0b011, 0b100, 0b100, 0b100, 0b011}},
     {'D', {0b110, 0b101, 0b101, 0b101, 0b110}},
     {'E', {0b111, 0b100, 0b110, 0b100, 0b111}},
+    {'F', {0b111, 0b100, 0b110, 0b100, 0b100}},
     {'G', {0b011, 0b100, 0b101, 0b101, 0b011}},
     {'H', {0b101, 0b101, 0b111, 0b101, 0b101}},
+    {'I', {0b111, 0b010, 0b010, 0b010, 0b111}},
     {'J', {0b111, 0b001, 0b001, 0b101, 0b111}},
     {'K', {0b101, 0b101, 0b110, 0b101, 0b101}},
     {'L', {0b100, 0b100, 0b100, 0b100, 0b111}},
     {'M', {0b101, 0b111, 0b101, 0b101, 0b101}},
     {'N', {0b101, 0b111, 0b111, 0b111, 0b101}},
     {'O', {0b111, 0b101, 0b101, 0b101, 0b111}},
+    {'P', {0b110, 0b101, 0b110, 0b100, 0b100}},
+    {'Q', {0b111, 0b101, 0b101, 0b111, 0b001}},
     {'R', {0b110, 0b101, 0b110, 0b101, 0b101}},
     {'S', {0b111, 0b100, 0b111, 0b001, 0b111}},
     {'T', {0b111, 0b010, 0b010, 0b010, 0b010}},
     {'U', {0b101, 0b101, 0b101, 0b101, 0b111}},
+    {'W', {0b101, 0b101, 0b111, 0b111, 0b101}},
     {'X', {0b101, 0b101, 0b010, 0b101, 0b101}},
+    {'Y', {0b101, 0b101, 0b010, 0b010, 0b010}},
 };
+
+static bool sensor_has_numeric_sample(const sensor_snapshot_t *snapshot, sensor_id_t sensor_id)
+{
+    if (snapshot == NULL) {
+        return false;
+    }
+
+    sensor_state_t state = snapshot->status[sensor_id].state;
+    return state == SENSOR_STATE_HEALTHY || state == SENSOR_STATE_WARMING_UP;
+}
+
+static const char *sensor_state_label(const sensor_snapshot_t *snapshot, sensor_id_t sensor_id)
+{
+    const sensor_status_t *status = &snapshot->status[sensor_id];
+
+    switch (status->state) {
+    case SENSOR_STATE_WAITING_FIRST_SAMPLE:
+        return "WAIT";
+    case SENSOR_STATE_WARMING_UP:
+        return "WARM";
+    case SENSOR_STATE_HEALTHY:
+        return "OK";
+    case SENSOR_STATE_STALE:
+        return "STAL";
+    case SENSOR_STATE_ERROR:
+        return "ERR";
+    case SENSOR_STATE_ABSENT_OPTIONAL:
+        return "MISS";
+    case SENSOR_STATE_INIT_FAILED:
+    default:
+        return status->initialized ? "ERR" : "OFF";
+    }
+}
 
 static const uint8_t *glyph_for_char(char c)
 {
@@ -225,12 +267,17 @@ esp_err_t display_ssd1306_init(void)
     }
 
     s_initialized = true;
+    s_has_presented_frame = false;
     ssd1306_clear_buffer();
+    memset(s_last_presented_frame, 0, sizeof(s_last_presented_frame));
     err = ssd1306_flush();
     if (err != ESP_OK) {
         s_initialized = false;
         return err;
     }
+
+    memcpy(s_last_presented_frame, s_framebuffer, sizeof(s_framebuffer));
+    s_has_presented_frame = true;
 
     ESP_LOGI(TAG, "SSD1306 detected at 0x%02X", s_i2c_addr);
     return ESP_OK;
@@ -249,24 +296,62 @@ esp_err_t display_ssd1306_render_summary(const sensor_snapshot_t *snapshot)
 
     ssd1306_clear_buffer();
 
-    snprintf(line, sizeof(line), "AMB %.1fC HUM %.1f%%", snapshot->dht_temp_c, snapshot->dht_humidity_pct);
+    if (sensor_has_numeric_sample(snapshot, SENSOR_ID_DHT22)) {
+        snprintf(line, sizeof(line), "AMB %.1fC H%.0f%%", snapshot->dht_temp_c, snapshot->dht_humidity_pct);
+    } else {
+        snprintf(line, sizeof(line), "AMB --.-C H--%%");
+    }
     ssd1306_draw_text_3x5(0, 0, line);
 
-    snprintf(line, sizeof(line), "OBJ %.1fC", snapshot->mlx_object_temp_c);
+    if (sensor_has_numeric_sample(snapshot, SENSOR_ID_MLX90614)) {
+        snprintf(line, sizeof(line), "OBJ %.1fC", snapshot->mlx_object_temp_c);
+    } else {
+        snprintf(line, sizeof(line), "OBJ --.-C");
+    }
     ssd1306_draw_text_3x5(0, 8, line);
 
-    snprintf(line, sizeof(line), "SND %d GAS %d", snapshot->ky037_raw, snapshot->mq2_raw);
+    if (sensor_has_numeric_sample(snapshot, SENSOR_ID_KY037)) {
+        snprintf(line, sizeof(line), "SND %d%% P%d", snapshot->ky037_activity_pct, snapshot->ky037_peak_to_peak);
+    } else {
+        snprintf(line, sizeof(line), "SND --%% P---");
+    }
     ssd1306_draw_text_3x5(0, 16, line);
 
-    const char *dht_state = snapshot->status[SENSOR_ID_DHT22].healthy ? "OK" : "ERR";
-    const char *mlx_state = snapshot->status[SENSOR_ID_MLX90614].healthy ? "OK" : "ERR";
-    snprintf(line, sizeof(line), "DHT %s MLX %s", dht_state, mlx_state);
+    if (sensor_has_numeric_sample(snapshot, SENSOR_ID_MQ135)) {
+        snprintf(line, sizeof(line), "MQ135 %d%% D%d", snapshot->mq135_response_pct, snapshot->mq135_delta_raw);
+    } else {
+        snprintf(line, sizeof(line), "MQ135 --%% D---");
+    }
     ssd1306_draw_text_3x5(0, 24, line);
 
-    const char *mq2_state = snapshot->status[SENSOR_ID_MQ2].healthy ? "OK" : "ERR";
-    const char *max_state = snapshot->status[SENSOR_ID_MAX30102].healthy ? "OK" : "ERR";
-    snprintf(line, sizeof(line), "MQ2 %s MAX %s", mq2_state, max_state);
+    snprintf(line,
+             sizeof(line),
+             "DHT %s MLX %s",
+             sensor_state_label(snapshot, SENSOR_ID_DHT22),
+             sensor_state_label(snapshot, SENSOR_ID_MLX90614));
     ssd1306_draw_text_3x5(0, 32, line);
 
-    return ssd1306_flush();
+    snprintf(line,
+             sizeof(line),
+             "MQ135 %s MAX %s",
+             sensor_state_label(snapshot, SENSOR_ID_MQ135),
+             sensor_state_label(snapshot, SENSOR_ID_MAX30102));
+    ssd1306_draw_text_3x5(0, 40, line);
+
+    snprintf(line, sizeof(line), "OLED %s", sensor_state_label(snapshot, SENSOR_ID_OLED));
+    ssd1306_draw_text_3x5(0, 48, line);
+
+    if (s_has_presented_frame &&
+        memcmp(s_framebuffer, s_last_presented_frame, sizeof(s_framebuffer)) == 0) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = ssd1306_flush();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    memcpy(s_last_presented_frame, s_framebuffer, sizeof(s_framebuffer));
+    s_has_presented_frame = true;
+    return ESP_OK;
 }
