@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "adc_manager.h"
+#include "blynk_bridge.h"
 #include "display_ssd1306.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -158,6 +159,15 @@ static void retry_i2c_sensor_inits(const sensor_snapshot_t *snapshot)
 
     if (snapshot->status[SENSOR_ID_MAX30102].state == SENSOR_STATE_INIT_FAILED) {
         register_init_result(SENSOR_ID_MAX30102, sensor_max30102_init(), false);
+    }
+
+    const sensor_state_t adxl_state = snapshot->status[SENSOR_ID_ADXL345].state;
+    if (adxl_state == SENSOR_STATE_INIT_FAILED ||
+        adxl_state == SENSOR_STATE_ABSENT_OPTIONAL) {
+        esp_err_t adxl_err = sensor_adxl345_init();
+        register_init_result(SENSOR_ID_ADXL345,
+                             adxl_err,
+                             adxl345_is_optional_absent_error(adxl_err));
     }
 
 #if ENABLE_OLED_SUMMARY
@@ -356,6 +366,8 @@ static void task_i2c_sensors(void *arg)
             if (err == ESP_OK) {
                 sensor_registry_update_max30102(reading.red,
                                                 reading.ir,
+                                                reading.spo2_pct,
+                                                reading.spo2_valid,
                                                 0U,
                                                 reading.samples_drained,
                                                 reading.signal_hint,
@@ -369,6 +381,8 @@ static void task_i2c_sensors(void *arg)
                     age_ms = 0;
                 }
                 sensor_registry_update_max30102_runtime((uint32_t)age_ms,
+                                                        snapshot.max30102_spo2_pct,
+                                                        snapshot.max30102_spo2_valid,
                                                         0U,
                                                         snapshot.max30102_signal_hint,
                                                         snapshot.max30102_heart_rate_valid,
@@ -403,12 +417,12 @@ static void task_i2c_sensors(void *arg)
             last_adxl345_us = now_us;
             sensor_registry_note_attempt(SENSOR_ID_ADXL345);
 
-            float x_g = 0.0f;
-            float y_g = 0.0f;
-            float z_g = 0.0f;
-            esp_err_t err = sensor_adxl345_read_xyz(&x_g, &y_g, &z_g);
+            int16_t x_raw = 0;
+            int16_t y_raw = 0;
+            int16_t z_raw = 0;
+            esp_err_t err = sensor_adxl345_read_xyz(&x_raw, &y_raw, &z_raw);
             if (err == ESP_OK) {
-                sensor_registry_update_adxl345(x_g, y_g, z_g, SENSOR_STATE_HEALTHY);
+                sensor_registry_update_adxl345(x_raw, y_raw, z_raw, SENSOR_STATE_HEALTHY);
             } else {
                 sensor_registry_record_failure(SENSOR_ID_ADXL345,
                                                next_state_after_hard_failure(adxl_status, now_us),
@@ -646,34 +660,13 @@ static void log_max30102_summary(const sensor_snapshot_t *snapshot)
 
     switch (status->state) {
     case SENSOR_STATE_HEALTHY:
-        if (snapshot->max30102_heart_rate_valid) {
-            ESP_LOGI(TAG,
-                     "[MAX30102] state=HEALTHY red=%lu ir=%lu age=%ldms drained=%lu hint=%s hr_est=%ubpm conf=%u%% dc=%lu env=%lu peaks=%u led=0x%02X",
-                     (unsigned long)snapshot->max30102_red,
-                     (unsigned long)snapshot->max30102_ir,
-                     (long)snapshot->max30102_sample_age_ms,
-                     (unsigned long)snapshot->max30102_samples_drained,
-                     sensor_max30102_signal_hint_name(snapshot->max30102_signal_hint),
-                     (unsigned int)snapshot->max30102_heart_rate_bpm,
-                     (unsigned int)snapshot->max30102_heart_rate_confidence_pct,
-                     (unsigned long)debug_state.ir_dc_level,
-                     (unsigned long)debug_state.ir_ac_envelope,
-                     (unsigned int)debug_state.hr_candidate_peaks,
-                     (unsigned int)debug_state.led_current_code);
-        } else {
-            ESP_LOGI(TAG,
-                     "[MAX30102] state=HEALTHY red=%lu ir=%lu age=%ldms drained=%lu hint=%s hr_est=SEARCHING dc=%lu env=%lu peaks=%u lock=%u led=0x%02X",
-                     (unsigned long)snapshot->max30102_red,
-                     (unsigned long)snapshot->max30102_ir,
-                     (long)snapshot->max30102_sample_age_ms,
-                     (unsigned long)snapshot->max30102_samples_drained,
-                     sensor_max30102_signal_hint_name(snapshot->max30102_signal_hint),
-                     (unsigned long)debug_state.ir_dc_level,
-                     (unsigned long)debug_state.ir_ac_envelope,
-                     (unsigned int)debug_state.hr_candidate_peaks,
-                     (unsigned int)debug_state.hr_consistent_intervals,
-                     (unsigned int)debug_state.led_current_code);
-        }
+        ESP_LOGI(TAG,
+                 "[MAX30102] red=%lu ir=%lu spo2=%u bpm=%u conf=%u%%",
+                 (unsigned long)snapshot->max30102_red,
+                 (unsigned long)snapshot->max30102_ir,
+                 (unsigned int)(snapshot->max30102_spo2_valid ? snapshot->max30102_spo2_pct : 0U),
+                 (unsigned int)snapshot->max30102_heart_rate_bpm,
+                 (unsigned int)snapshot->max30102_heart_rate_confidence_pct);
         break;
     case SENSOR_STATE_WAITING_FIRST_SAMPLE:
         ESP_LOGI(TAG,
@@ -717,16 +710,18 @@ static void log_adxl345_summary(const sensor_snapshot_t *snapshot, int64_t now_u
     switch (status->state) {
     case SENSOR_STATE_HEALTHY:
         ESP_LOGI(TAG,
-                 "[ADXL345] state=HEALTHY x=%.3fg y=%.3fg z=%.3fg age=%lldms",
-                 snapshot->adxl_x_g,
-                 snapshot->adxl_y_g,
-                 snapshot->adxl_z_g,
+                 "[ADXL345] state=HEALTHY x=%d y=%d z=%d age=%lldms",
+                 snapshot->adxl_x_raw,
+                 snapshot->adxl_y_raw,
+                 snapshot->adxl_z_raw,
                  (long long)age_ms);
         break;
     case SENSOR_STATE_ABSENT_OPTIONAL:
+        ESP_LOGI(TAG, "[ADXL345] state=ABSENT_OPTIONAL err=%s", esp_err_to_name(status->last_error));
         break;
     case SENSOR_STATE_STALE:
     case SENSOR_STATE_ERROR:
+    case SENSOR_STATE_INIT_FAILED:
         ESP_LOGW(TAG,
                  "[ADXL345] state=%s err=%s",
                  sensor_registry_state_name(status->state),
@@ -779,6 +774,7 @@ static void task_logger(void *arg)
         log_max30102_summary(&snapshot);
         log_adxl345_summary(&snapshot, now_us);
         log_oled_summary(&snapshot);
+        blynk_bridge_publish_snapshot(&snapshot);
 
         int64_t uptime_s = (esp_timer_get_time() - snapshot.boot_time_us) / 1000000LL;
         ESP_LOGI(TAG, "[HEARTBEAT] uptime=%llds", (long long)uptime_s);
@@ -794,6 +790,11 @@ void app_main(void)
     initialize_nvs();
     sensor_registry_init();
     register_sensor_configs();
+
+    esp_err_t blynk_err = blynk_bridge_init();
+    if (blynk_err != ESP_OK) {
+        ESP_LOGW(TAG, "Blynk bridge init incomplete: %s", esp_err_to_name(blynk_err));
+    }
 
     esp_err_t i2c_err = i2c_manager_init();
     if (i2c_err == ESP_OK) {
@@ -840,6 +841,7 @@ void app_main(void)
     xTaskCreate(task_analog, "task_analog", 4096, NULL, 5, NULL);
     xTaskCreate(task_i2c_sensors, "task_i2c", 4096, NULL, 5, NULL);
     xTaskCreate(task_logger, "task_logger", 6144, NULL, 4, NULL);
+    xTaskCreate(blynk_bridge_task, "task_blynk", 4096, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "Production-hardening tasks started.");
 }

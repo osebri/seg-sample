@@ -84,29 +84,6 @@ static bool sensor_has_numeric_sample(const sensor_snapshot_t *snapshot, sensor_
     return state == SENSOR_STATE_HEALTHY || state == SENSOR_STATE_WARMING_UP;
 }
 
-static const char *sensor_state_label(const sensor_snapshot_t *snapshot, sensor_id_t sensor_id)
-{
-    const sensor_status_t *status = &snapshot->status[sensor_id];
-
-    switch (status->state) {
-    case SENSOR_STATE_WAITING_FIRST_SAMPLE:
-        return "WAIT";
-    case SENSOR_STATE_WARMING_UP:
-        return "WARM";
-    case SENSOR_STATE_HEALTHY:
-        return "OK";
-    case SENSOR_STATE_STALE:
-        return "STAL";
-    case SENSOR_STATE_ERROR:
-        return "ERR";
-    case SENSOR_STATE_ABSENT_OPTIONAL:
-        return "MISS";
-    case SENSOR_STATE_INIT_FAILED:
-    default:
-        return status->initialized ? "ERR" : "OFF";
-    }
-}
-
 static const uint8_t *glyph_for_char(char c)
 {
     for (size_t i = 0; i < (sizeof(s_glyphs) / sizeof(s_glyphs[0])); ++i) {
@@ -310,35 +287,41 @@ esp_err_t display_ssd1306_render_summary(const sensor_snapshot_t *snapshot)
     }
     ssd1306_draw_text_3x5(0, 8, line);
 
-    if (sensor_has_numeric_sample(snapshot, SENSOR_ID_KY037)) {
-        snprintf(line, sizeof(line), "SND %d%% P%d", snapshot->ky037_activity_pct, snapshot->ky037_peak_to_peak);
+    if (sensor_has_numeric_sample(snapshot, SENSOR_ID_MAX30102)) {
+        snprintf(line,
+                 sizeof(line),
+                 "MAX O2%u P%u",
+                 (unsigned int)(snapshot->max30102_spo2_valid ? snapshot->max30102_spo2_pct : 0U),
+                 (unsigned int)snapshot->max30102_heart_rate_bpm);
     } else {
-        snprintf(line, sizeof(line), "SND --%% P---");
+        snprintf(line, sizeof(line), "MAX O2-- P--");
     }
     ssd1306_draw_text_3x5(0, 16, line);
+
+    if (sensor_has_numeric_sample(snapshot, SENSOR_ID_ADXL345)) {
+        snprintf(line,
+                 sizeof(line),
+                 "A X%d Y%d Z%d",
+                 snapshot->adxl_x_raw,
+                 snapshot->adxl_y_raw,
+                 snapshot->adxl_z_raw);
+    } else {
+        snprintf(line, sizeof(line), "A X-- Y-- Z--");
+    }
+    ssd1306_draw_text_3x5(0, 24, line);
+
+    if (sensor_has_numeric_sample(snapshot, SENSOR_ID_KY037)) {
+        snprintf(line, sizeof(line), "KY %d%% P%d", snapshot->ky037_activity_pct, snapshot->ky037_peak_to_peak);
+    } else {
+        snprintf(line, sizeof(line), "KY --%% P---");
+    }
+    ssd1306_draw_text_3x5(0, 40, line);
 
     if (sensor_has_numeric_sample(snapshot, SENSOR_ID_MQ135)) {
         snprintf(line, sizeof(line), "MQ135 %d%% D%d", snapshot->mq135_response_pct, snapshot->mq135_delta_raw);
     } else {
         snprintf(line, sizeof(line), "MQ135 --%% D---");
     }
-    ssd1306_draw_text_3x5(0, 24, line);
-
-    snprintf(line,
-             sizeof(line),
-             "DHT %s MLX %s",
-             sensor_state_label(snapshot, SENSOR_ID_DHT22),
-             sensor_state_label(snapshot, SENSOR_ID_MLX90614));
-    ssd1306_draw_text_3x5(0, 32, line);
-
-    snprintf(line,
-             sizeof(line),
-             "MQ135 %s MAX %s",
-             sensor_state_label(snapshot, SENSOR_ID_MQ135),
-             sensor_state_label(snapshot, SENSOR_ID_MAX30102));
-    ssd1306_draw_text_3x5(0, 40, line);
-
-    snprintf(line, sizeof(line), "OLED %s", sensor_state_label(snapshot, SENSOR_ID_OLED));
     ssd1306_draw_text_3x5(0, 48, line);
 
     if (s_has_presented_frame &&

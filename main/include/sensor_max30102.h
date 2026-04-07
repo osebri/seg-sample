@@ -32,6 +32,8 @@ typedef struct {
 typedef struct {
     uint32_t red;
     uint32_t ir;
+    uint8_t spo2_pct;
+    bool spo2_valid;
     uint32_t samples_drained;
     sensor_max30102_signal_hint_t signal_hint;
     bool heart_rate_valid;

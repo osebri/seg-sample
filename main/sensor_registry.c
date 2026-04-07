@@ -230,6 +230,8 @@ void sensor_registry_update_mlx90614(float object_temp_c, float ambient_temp_c, 
 
 void sensor_registry_update_max30102(uint32_t red,
                                      uint32_t ir,
+                                     uint8_t spo2_pct,
+                                     bool spo2_valid,
                                      uint32_t sample_age_ms,
                                      uint32_t samples_drained,
                                      sensor_max30102_signal_hint_t signal_hint,
@@ -244,6 +246,8 @@ void sensor_registry_update_max30102(uint32_t red,
 
     s_snapshot.max30102_red = red;
     s_snapshot.max30102_ir = ir;
+    s_snapshot.max30102_spo2_pct = spo2_pct;
+    s_snapshot.max30102_spo2_valid = spo2_valid;
     s_snapshot.max30102_sample_age_ms = (int32_t)sample_age_ms;
     s_snapshot.max30102_samples_drained = samples_drained;
     s_snapshot.max30102_signal_hint = signal_hint;
@@ -256,6 +260,8 @@ void sensor_registry_update_max30102(uint32_t red,
 }
 
 void sensor_registry_update_max30102_runtime(uint32_t sample_age_ms,
+                                             uint8_t spo2_pct,
+                                             bool spo2_valid,
                                              uint32_t samples_drained,
                                              sensor_max30102_signal_hint_t signal_hint,
                                              bool heart_rate_valid,
@@ -267,6 +273,8 @@ void sensor_registry_update_max30102_runtime(uint32_t sample_age_ms,
     }
 
     s_snapshot.max30102_sample_age_ms = (int32_t)sample_age_ms;
+    s_snapshot.max30102_spo2_pct = spo2_pct;
+    s_snapshot.max30102_spo2_valid = spo2_valid;
     s_snapshot.max30102_samples_drained = samples_drained;
     s_snapshot.max30102_signal_hint = signal_hint;
     s_snapshot.max30102_heart_rate_valid = heart_rate_valid;
@@ -309,15 +317,15 @@ void sensor_registry_update_mq135(int filtered_raw,
     sensor_registry_unlock();
 }
 
-void sensor_registry_update_adxl345(float x_g, float y_g, float z_g, sensor_state_t state)
+void sensor_registry_update_adxl345(int16_t x_raw, int16_t y_raw, int16_t z_raw, sensor_state_t state)
 {
     if (!sensor_registry_lock()) {
         return;
     }
 
-    s_snapshot.adxl_x_g = x_g;
-    s_snapshot.adxl_y_g = y_g;
-    s_snapshot.adxl_z_g = z_g;
+    s_snapshot.adxl_x_raw = x_raw;
+    s_snapshot.adxl_y_raw = y_raw;
+    s_snapshot.adxl_z_raw = z_raw;
     sensor_registry_apply_success_locked(SENSOR_ID_ADXL345, state);
 
     sensor_registry_unlock();

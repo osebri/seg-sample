@@ -4,6 +4,7 @@ idf_component_register(
         "sensor_registry.c"
         "i2c_manager.c"
         "adc_manager.c"
+        "blynk_bridge.c"
         "sensor_dht22.c"
         "sensor_mlx90614.c"
         "sensor_max30102.c"
@@ -14,4 +15,17 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "include"
+    REQUIRES
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_event
+        esp_http_client
+        esp_netif
+        esp_timer
+        esp-tls
+        esp_wifi
+        log
+        nvs_flash
+    PRIV_REQUIRES
+        esp_adc
 )

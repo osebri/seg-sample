@@ -91,12 +91,12 @@ esp_err_t sensor_adxl345_init(void)
     return ESP_OK;
 }
 
-esp_err_t sensor_adxl345_read_xyz(float *x_g, float *y_g, float *z_g)
+esp_err_t sensor_adxl345_read_xyz(int16_t *x_raw, int16_t *y_raw, int16_t *z_raw)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (x_g == NULL || y_g == NULL || z_g == NULL) {
+    if (x_raw == NULL || y_raw == NULL || z_raw == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -110,10 +110,9 @@ esp_err_t sensor_adxl345_read_xyz(float *x_g, float *y_g, float *z_g)
     int16_t y = (int16_t)((raw[3] << 8) | raw[2]);
     int16_t z = (int16_t)((raw[5] << 8) | raw[4]);
 
-    const float scale_g_per_lsb = 0.0039f;
-    *x_g = x * scale_g_per_lsb;
-    *y_g = y * scale_g_per_lsb;
-    *z_g = z * scale_g_per_lsb;
+    *x_raw = x;
+    *y_raw = y;
+    *z_raw = z;
 
     return ESP_OK;
 }

@@ -47,6 +47,8 @@ typedef struct {
 
     uint32_t max30102_red;
     uint32_t max30102_ir;
+    uint8_t max30102_spo2_pct;
+    bool max30102_spo2_valid;
     int32_t max30102_sample_age_ms;
     uint32_t max30102_samples_drained;
     sensor_max30102_signal_hint_t max30102_signal_hint;
@@ -63,9 +65,9 @@ typedef struct {
     int mq135_delta_raw;
     int mq135_response_pct;
 
-    float adxl_x_g;
-    float adxl_y_g;
-    float adxl_z_g;
+    int16_t adxl_x_raw;
+    int16_t adxl_y_raw;
+    int16_t adxl_z_raw;
 
     sensor_status_t status[SENSOR_ID_COUNT];
     int64_t boot_time_us;
@@ -86,6 +88,8 @@ void sensor_registry_update_dht22(float temp_c, float humidity_pct, sensor_state
 void sensor_registry_update_mlx90614(float object_temp_c, float ambient_temp_c, sensor_state_t state);
 void sensor_registry_update_max30102(uint32_t red,
                                      uint32_t ir,
+                                     uint8_t spo2_pct,
+                                     bool spo2_valid,
                                      uint32_t sample_age_ms,
                                      uint32_t samples_drained,
                                      sensor_max30102_signal_hint_t signal_hint,
@@ -94,6 +98,8 @@ void sensor_registry_update_max30102(uint32_t red,
                                      uint8_t heart_rate_confidence_pct,
                                      sensor_state_t state);
 void sensor_registry_update_max30102_runtime(uint32_t sample_age_ms,
+                                             uint8_t spo2_pct,
+                                             bool spo2_valid,
                                              uint32_t samples_drained,
                                              sensor_max30102_signal_hint_t signal_hint,
                                              bool heart_rate_valid,
@@ -105,6 +111,6 @@ void sensor_registry_update_mq135(int filtered_raw,
                                   int delta_raw,
                                   int response_pct,
                                   sensor_state_t state);
-void sensor_registry_update_adxl345(float x_g, float y_g, float z_g, sensor_state_t state);
+void sensor_registry_update_adxl345(int16_t x_raw, int16_t y_raw, int16_t z_raw, sensor_state_t state);
 
 void sensor_registry_get_snapshot(sensor_snapshot_t *out_snapshot);
