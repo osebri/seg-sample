@@ -46,7 +46,7 @@ static void blynk_wifi_event_handler(void *arg,
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
-        ESP_LOGI(TAG, "Wi-Fi started, connecting to '%s'", BLYNK_WIFI_SSID);
+        ESP_LOGI(TAG, "Wi-Fi started, connecting to configured network");
         (void)esp_wifi_connect();
         return;
     }
@@ -247,7 +247,6 @@ static esp_err_t blynk_log_event(const char *event_code)
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Logging Blynk event: %s", event_code);
-    ESP_LOGI(TAG, "Event URL: %s", url);
 
     return blynk_http_publish(url);
 }
@@ -454,11 +453,11 @@ void blynk_bridge_publish_snapshot(const sensor_snapshot_t *snapshot)
                                               ? snapshot->max30102_spo2_pct
                                               : 0U),
                            BLYNK_VPIN_ACCEL_X,
-                           sensor_has_publishable_value(snapshot, SENSOR_ID_ADXL345) ? (double)snapshot->adxl_x_raw : 0.0f,
+                           sensor_has_publishable_value(snapshot, SENSOR_ID_ADXL345) ? (double)snapshot->adxl_x_mg : 0.0f,
                            BLYNK_VPIN_ACCEL_Y,
-                           sensor_has_publishable_value(snapshot, SENSOR_ID_ADXL345) ? (double)snapshot->adxl_y_raw : 0.0f,
+                           sensor_has_publishable_value(snapshot, SENSOR_ID_ADXL345) ? (double)snapshot->adxl_y_mg : 0.0f,
                            BLYNK_VPIN_ACCEL_Z,
-                           sensor_has_publishable_value(snapshot, SENSOR_ID_ADXL345) ? (double)snapshot->adxl_z_raw : 0.0f);
+                           sensor_has_publishable_value(snapshot, SENSOR_ID_ADXL345) ? (double)snapshot->adxl_z_mg : 0.0f);
 
     blynk_bridge_publish_alerts(snapshot);
     if (written <= 0 || written >= (int)sizeof(url))

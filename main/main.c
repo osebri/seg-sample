@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -21,6 +22,11 @@
 
 static const char *TAG = "phase1_main";
 
+#define LED_POWER_GPIO GPIO_NUM_19
+#define LED_SAFE_GPIO GPIO_NUM_18
+#define LED_WARNING_GPIO GPIO_NUM_5
+#define LED_CRITICAL_GPIO GPIO_NUM_23
+
 #define DHT22_TASK_PERIOD_MS 3000
 #define ANALOG_TASK_PERIOD_MS 50
 #define ANALOG_KY037_PERIOD_MS 250
@@ -39,6 +45,153 @@ static const char *TAG = "phase1_main";
 #define MQ135_STALE_AFTER_MS 4000
 #define ADXL345_STALE_AFTER_MS 4000
 #define OLED_STALE_AFTER_MS 4000
+#define LED_TASK_PERIOD_MS 100
+
+#define WARNING_HUMIDITY_THRESHOLD_PCT 55.0f
+#define WARNING_SOUND_ACTIVITY_THRESHOLD_PCT 0
+#define WARNING_MOVEMENT_THRESHOLD_MG 120
+
+#define CRITICAL_BODY_TEMP_LOW_C 36.0f
+#define CRITICAL_BODY_TEMP_HIGH_C 37.5f
+#define CRITICAL_ROOM_TEMP_LOW_C 20.0f
+#define CRITICAL_ROOM_TEMP_HIGH_C 22.2f
+#define CRITICAL_AIR_QUALITY_THRESHOLD_PCT 70
+
+typedef enum {
+    LED_STATE_UNKNOWN = 0,
+    LED_STATE_NORMAL,
+    LED_STATE_WARNING,
+    LED_STATE_CRITICAL,
+} led_state_t;
+
+static void initialize_leds(void)
+{
+    const uint64_t pin_mask = (1ULL << LED_POWER_GPIO) |
+                              (1ULL << LED_SAFE_GPIO) |
+                              (1ULL << LED_WARNING_GPIO) |
+                              (1ULL << LED_CRITICAL_GPIO);
+
+    const gpio_config_t io_cfg = {
+        .pin_bit_mask = pin_mask,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&io_cfg));
+    ESP_ERROR_CHECK(gpio_set_level(LED_POWER_GPIO, 1));
+    ESP_ERROR_CHECK(gpio_set_level(LED_SAFE_GPIO, 0));
+    ESP_ERROR_CHECK(gpio_set_level(LED_WARNING_GPIO, 0));
+    ESP_ERROR_CHECK(gpio_set_level(LED_CRITICAL_GPIO, 0));
+}
+
+static bool sensor_has_led_value(const sensor_snapshot_t *snapshot, sensor_id_t sensor_id)
+{
+    if (snapshot == NULL) {
+        return false;
+    }
+
+    sensor_state_t state = snapshot->status[sensor_id].state;
+    return state == SENSOR_STATE_HEALTHY || state == SENSOR_STATE_WARMING_UP;
+}
+
+static bool movement_warning_detected(const sensor_snapshot_t *snapshot)
+{
+    if (!sensor_has_led_value(snapshot, SENSOR_ID_ADXL345)) {
+        return false;
+    }
+
+    return snapshot->adxl_motion_delta_mg >= WARNING_MOVEMENT_THRESHOLD_MG;
+}
+
+static bool led_warning_condition_exists(const sensor_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) {
+        return false;
+    }
+
+    if (sensor_has_led_value(snapshot, SENSOR_ID_DHT22) &&
+        snapshot->dht_humidity_pct > WARNING_HUMIDITY_THRESHOLD_PCT) {
+        return true;
+    }
+
+    if (sensor_has_led_value(snapshot, SENSOR_ID_KY037) &&
+        snapshot->ky037_activity_pct > WARNING_SOUND_ACTIVITY_THRESHOLD_PCT) {
+        return true;
+    }
+
+    return movement_warning_detected(snapshot);
+}
+
+static bool led_critical_condition_exists(const sensor_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) {
+        return false;
+    }
+
+    if (sensor_has_led_value(snapshot, SENSOR_ID_MLX90614) &&
+        (snapshot->mlx_object_temp_c < CRITICAL_BODY_TEMP_LOW_C ||
+         snapshot->mlx_object_temp_c > CRITICAL_BODY_TEMP_HIGH_C)) {
+        return true;
+    }
+
+    if (sensor_has_led_value(snapshot, SENSOR_ID_DHT22) &&
+        (snapshot->dht_temp_c < CRITICAL_ROOM_TEMP_LOW_C ||
+         snapshot->dht_temp_c > CRITICAL_ROOM_TEMP_HIGH_C)) {
+        return true;
+    }
+
+    if (sensor_has_led_value(snapshot, SENSOR_ID_MQ135) &&
+        snapshot->mq135_response_pct > CRITICAL_AIR_QUALITY_THRESHOLD_PCT) {
+        return true;
+    }
+
+    return false;
+}
+
+static bool led_normal_state_ready(const sensor_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) {
+        return false;
+    }
+
+    if (!sensor_has_led_value(snapshot, SENSOR_ID_DHT22) ||
+        !sensor_has_led_value(snapshot, SENSOR_ID_MLX90614) ||
+        !sensor_has_led_value(snapshot, SENSOR_ID_KY037) ||
+        !sensor_has_led_value(snapshot, SENSOR_ID_MQ135)) {
+        return false;
+    }
+
+    const sensor_status_t *adxl_status = &snapshot->status[SENSOR_ID_ADXL345];
+    return sensor_has_led_value(snapshot, SENSOR_ID_ADXL345) ||
+           adxl_status->state == SENSOR_STATE_ABSENT_OPTIONAL;
+}
+
+static led_state_t determine_led_state(const sensor_snapshot_t *snapshot)
+{
+    if (led_critical_condition_exists(snapshot)) {
+        return LED_STATE_CRITICAL;
+    }
+
+    if (led_warning_condition_exists(snapshot)) {
+        return LED_STATE_WARNING;
+    }
+
+    if (led_normal_state_ready(snapshot)) {
+        return LED_STATE_NORMAL;
+    }
+
+    return LED_STATE_UNKNOWN;
+}
+
+static void apply_led_state(led_state_t state)
+{
+    ESP_ERROR_CHECK(gpio_set_level(LED_POWER_GPIO, 1));
+    ESP_ERROR_CHECK(gpio_set_level(LED_SAFE_GPIO, state == LED_STATE_NORMAL));
+    ESP_ERROR_CHECK(gpio_set_level(LED_WARNING_GPIO, state == LED_STATE_WARNING));
+    ESP_ERROR_CHECK(gpio_set_level(LED_CRITICAL_GPIO, state == LED_STATE_CRITICAL));
+}
 
 static void initialize_nvs(void)
 {
@@ -316,6 +469,10 @@ static void task_i2c_sensors(void *arg)
     int64_t last_mlx90614_us = 0;
     int64_t last_adxl345_us = 0;
     int64_t last_oled_us = 0;
+    bool have_last_adxl_sample = false;
+    int16_t last_adxl_x_mg = 0;
+    int16_t last_adxl_y_mg = 0;
+    int16_t last_adxl_z_mg = 0;
 
     while (true) {
         int64_t now_us = esp_timer_get_time();
@@ -422,7 +579,34 @@ static void task_i2c_sensors(void *arg)
             int16_t z_raw = 0;
             esp_err_t err = sensor_adxl345_read_xyz(&x_raw, &y_raw, &z_raw);
             if (err == ESP_OK) {
-                sensor_registry_update_adxl345(x_raw, y_raw, z_raw, SENSOR_STATE_HEALTHY);
+                int16_t x_mg = sensor_adxl345_raw_to_mg(x_raw);
+                int16_t y_mg = sensor_adxl345_raw_to_mg(y_raw);
+                int16_t z_mg = sensor_adxl345_raw_to_mg(z_raw);
+                uint16_t motion_delta_mg = 0;
+
+                if (have_last_adxl_sample) {
+                    int dx_mg = abs((int)x_mg - (int)last_adxl_x_mg);
+                    int dy_mg = abs((int)y_mg - (int)last_adxl_y_mg);
+                    int dz_mg = abs((int)z_mg - (int)last_adxl_z_mg);
+                    int max_delta_mg = dx_mg;
+
+                    if (dy_mg > max_delta_mg) {
+                        max_delta_mg = dy_mg;
+                    }
+                    if (dz_mg > max_delta_mg) {
+                        max_delta_mg = dz_mg;
+                    }
+
+                    motion_delta_mg = (uint16_t)max_delta_mg;
+                } else {
+                    have_last_adxl_sample = true;
+                }
+
+                last_adxl_x_mg = x_mg;
+                last_adxl_y_mg = y_mg;
+                last_adxl_z_mg = z_mg;
+
+                sensor_registry_update_adxl345(x_mg, y_mg, z_mg, motion_delta_mg, SENSOR_STATE_HEALTHY);
             } else {
                 sensor_registry_record_failure(SENSOR_ID_ADXL345,
                                                next_state_after_hard_failure(adxl_status, now_us),
@@ -710,10 +894,11 @@ static void log_adxl345_summary(const sensor_snapshot_t *snapshot, int64_t now_u
     switch (status->state) {
     case SENSOR_STATE_HEALTHY:
         ESP_LOGI(TAG,
-                 "[ADXL345] state=HEALTHY x=%d y=%d z=%d age=%lldms",
-                 snapshot->adxl_x_raw,
-                 snapshot->adxl_y_raw,
-                 snapshot->adxl_z_raw,
+                 "[ADXL345] state=HEALTHY x=%dmg y=%dmg z=%dmg d=%umg age=%lldms",
+                 snapshot->adxl_x_mg,
+                 snapshot->adxl_y_mg,
+                 snapshot->adxl_z_mg,
+                 (unsigned int)snapshot->adxl_motion_delta_mg,
                  (long long)age_ms);
         break;
     case SENSOR_STATE_ABSENT_OPTIONAL:
@@ -783,11 +968,39 @@ static void task_logger(void *arg)
     }
 }
 
+static void task_leds(void *arg)
+{
+    (void)arg;
+
+    TickType_t last_wake = xTaskGetTickCount();
+    led_state_t last_state = LED_STATE_UNKNOWN;
+
+    while (true) {
+        sensor_snapshot_t snapshot;
+        sensor_registry_get_snapshot(&snapshot);
+
+        led_state_t next_state = determine_led_state(&snapshot);
+        apply_led_state(next_state);
+
+        if (next_state != last_state) {
+            ESP_LOGI(TAG,
+                     "[LED] power=ON safe=%s warning=%s critical=%s",
+                     next_state == LED_STATE_NORMAL ? "ON" : "OFF",
+                     next_state == LED_STATE_WARNING ? "ON" : "OFF",
+                     next_state == LED_STATE_CRITICAL ? "ON" : "OFF");
+            last_state = next_state;
+        }
+
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(LED_TASK_PERIOD_MS));
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "Production-hardening firmware booting...");
 
     initialize_nvs();
+    initialize_leds();
     sensor_registry_init();
     register_sensor_configs();
 
@@ -841,6 +1054,7 @@ void app_main(void)
     xTaskCreate(task_analog, "task_analog", 4096, NULL, 5, NULL);
     xTaskCreate(task_i2c_sensors, "task_i2c", 4096, NULL, 5, NULL);
     xTaskCreate(task_logger, "task_logger", 6144, NULL, 4, NULL);
+    xTaskCreate(task_leds, "task_leds", 3072, NULL, 4, NULL);
     xTaskCreate(blynk_bridge_task, "task_blynk", 4096, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "Production-hardening tasks started.");

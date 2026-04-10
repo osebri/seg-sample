@@ -43,8 +43,13 @@ static const char *TAG = "sensor_max30102";
 #define MAX30102_MIN_BPM 20U
 #define MAX30102_MAX_BPM 255U
 #define MAX30102_MIN_BEAT_INTERVAL_US 250000LL
-#define MAX30102_RATE_SIZE 4U
+#define MAX30102_RATE_SIZE 6U
 #define MAX30102_ASSUMED_SAMPLE_PERIOD_US 10000LL
+#define MAX30102_DC_ALPHA 0.02f
+#define MAX30102_SMOOTHING_ALPHA 0.45f
+#define MAX30102_ENVELOPE_ALPHA 0.12f
+#define MAX30102_MIN_PEAK_PROMINENCE 120.0f
+#define MAX30102_MIN_SIGNAL_ENVELOPE 60.0f
 static bool s_initialized;
 static sensor_max30102_debug_t s_debug;
 static uint32_t s_last_red;
@@ -63,6 +68,12 @@ static uint32_t s_prev_ir2;
 static uint32_t s_prev_ir1;
 static bool s_have_prev_ir2;
 static bool s_have_prev_ir1;
+static float s_ir_dc_estimate;
+static float s_ir_envelope;
+static float s_filtered_prev2;
+static float s_filtered_prev1;
+static bool s_have_filtered_prev2;
+static bool s_have_filtered_prev1;
 
 static esp_err_t max30102_write_u8(uint8_t reg, uint8_t value)
 {
@@ -108,6 +119,12 @@ static void max30102_reset_runtime_state(void)
     s_prev_ir1 = 0;
     s_have_prev_ir2 = false;
     s_have_prev_ir1 = false;
+    s_ir_dc_estimate = 0.0f;
+    s_ir_envelope = 0.0f;
+    s_filtered_prev2 = 0.0f;
+    s_filtered_prev1 = 0.0f;
+    s_have_filtered_prev2 = false;
+    s_have_filtered_prev1 = false;
     s_debug.led_current_code = s_led_current_code;
 }
 
@@ -142,8 +159,33 @@ static void max30102_clear_heart_rate(void)
     s_prev_ir1 = 0;
     s_have_prev_ir2 = false;
     s_have_prev_ir1 = false;
+    s_ir_dc_estimate = 0.0f;
+    s_ir_envelope = 0.0f;
+    s_filtered_prev2 = 0.0f;
+    s_filtered_prev1 = 0.0f;
+    s_have_filtered_prev2 = false;
+    s_have_filtered_prev1 = false;
     s_debug.hr_candidate_peaks = 0;
     s_debug.hr_consistent_intervals = 0;
+}
+
+static uint16_t max30102_recent_rate_average(void)
+{
+    uint32_t sum = 0;
+    uint8_t count = 0;
+
+    for (uint8_t i = 0; i < MAX30102_RATE_SIZE; ++i) {
+        if (s_rates[i] != 0U) {
+            sum += s_rates[i];
+            count++;
+        }
+    }
+
+    if (count == 0U) {
+        return 0U;
+    }
+
+    return (uint16_t)(sum / count);
 }
 
 static void max30102_store_rate(uint16_t bpm)
@@ -151,11 +193,11 @@ static void max30102_store_rate(uint16_t bpm)
     s_rates[s_rate_spot] = bpm;
     s_rate_spot = (uint8_t)((s_rate_spot + 1U) % MAX30102_RATE_SIZE);
 
-    uint32_t sum = 0;
+    s_beat_avg = max30102_recent_rate_average();
+
     uint8_t count = 0;
     for (uint8_t i = 0; i < MAX30102_RATE_SIZE; ++i) {
         if (s_rates[i] != 0U) {
-            sum += s_rates[i];
             count++;
         }
     }
@@ -167,8 +209,7 @@ static void max30102_store_rate(uint16_t bpm)
         return;
     }
 
-    s_beat_avg = (uint16_t)(sum / count);
-    s_heart_rate_valid = count >= 2U;
+    s_heart_rate_valid = count >= 1U;
     s_confidence_pct = (uint8_t)((count * 100U) / MAX30102_RATE_SIZE);
 }
 
@@ -210,9 +251,20 @@ static void max30102_update_spo2(uint32_t red_min,
 
 static void max30102_process_ir_sample(uint32_t ir, int64_t sample_time_us)
 {
+    if (s_ir_dc_estimate == 0.0f) {
+        s_ir_dc_estimate = (float)ir;
+    } else {
+        s_ir_dc_estimate += ((float)ir - s_ir_dc_estimate) * MAX30102_DC_ALPHA;
+    }
+
+    float ac_component = (float)ir - s_ir_dc_estimate;
+
     if (!s_have_prev_ir1) {
         s_prev_ir1 = ir;
         s_have_prev_ir1 = true;
+        s_filtered_prev1 = ac_component;
+        s_have_filtered_prev1 = true;
+        s_ir_envelope = 0.0f;
         return;
     }
 
@@ -220,12 +272,36 @@ static void max30102_process_ir_sample(uint32_t ir, int64_t sample_time_us)
         s_prev_ir2 = s_prev_ir1;
         s_prev_ir1 = ir;
         s_have_prev_ir2 = true;
+        s_filtered_prev2 = s_filtered_prev1;
+        s_filtered_prev1 += (ac_component - s_filtered_prev1) * MAX30102_SMOOTHING_ALPHA;
+        s_have_filtered_prev2 = true;
         return;
     }
 
-    if (s_prev_ir1 > s_prev_ir2 &&
-        s_prev_ir1 > ir &&
-        s_prev_ir1 > MAX30102_BEAT_THRESHOLD) {
+    float filtered = s_filtered_prev1 + ((ac_component - s_filtered_prev1) * MAX30102_SMOOTHING_ALPHA);
+    float abs_filtered = filtered >= 0.0f ? filtered : -filtered;
+    s_ir_envelope += (abs_filtered - s_ir_envelope) * MAX30102_ENVELOPE_ALPHA;
+
+    float adaptive_threshold = s_ir_envelope * 0.55f;
+    if (adaptive_threshold < MAX30102_MIN_PEAK_PROMINENCE) {
+        adaptive_threshold = MAX30102_MIN_PEAK_PROMINENCE;
+    }
+
+    float neighborhood_floor = s_filtered_prev2;
+    if (filtered < neighborhood_floor) {
+        neighborhood_floor = filtered;
+    }
+    float prominence = s_filtered_prev1 - neighborhood_floor;
+    bool candidate_peak = s_have_filtered_prev2 &&
+                          s_have_filtered_prev1 &&
+                          s_filtered_prev1 > s_filtered_prev2 &&
+                          s_filtered_prev1 >= filtered &&
+                          s_filtered_prev1 > adaptive_threshold &&
+                          prominence > (adaptive_threshold * 0.35f) &&
+                          s_ir_envelope >= MAX30102_MIN_SIGNAL_ENVELOPE &&
+                          s_prev_ir1 > MAX30102_NO_FINGER_THRESHOLD;
+
+    if (candidate_peak) {
         s_debug.hr_candidate_peaks++;
 
         int64_t beat_time_us = sample_time_us - MAX30102_ASSUMED_SAMPLE_PERIOD_US;
@@ -234,17 +310,24 @@ static void max30102_process_ir_sample(uint32_t ir, int64_t sample_time_us)
             if (delta_us >= MAX30102_MIN_BEAT_INTERVAL_US) {
                 float bpm = 60.0f / ((float)delta_us / 1000000.0f);
                 if (bpm > (float)MAX30102_MIN_BPM && bpm < (float)MAX30102_MAX_BPM) {
+                    uint16_t rounded_bpm = (uint16_t)(bpm + 0.5f);
                     s_beats_per_minute = bpm;
-                    max30102_store_rate((uint16_t)bpm);
+                    max30102_store_rate(rounded_bpm);
                     s_debug.hr_consistent_intervals++;
+                    s_last_beat_us = beat_time_us;
                 }
             }
+        } else {
+            s_last_beat_us = beat_time_us;
         }
-        s_last_beat_us = beat_time_us;
     }
 
     s_prev_ir2 = s_prev_ir1;
     s_prev_ir1 = ir;
+    s_filtered_prev2 = s_filtered_prev1;
+    s_filtered_prev1 = filtered;
+    s_have_filtered_prev2 = true;
+    s_have_filtered_prev1 = true;
 }
 
 static esp_err_t max30102_read_fifo_pointers(uint8_t *write_ptr, uint8_t *read_ptr, uint8_t *overflow)

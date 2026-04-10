@@ -302,9 +302,9 @@ esp_err_t display_ssd1306_render_summary(const sensor_snapshot_t *snapshot)
         snprintf(line,
                  sizeof(line),
                  "A X%d Y%d Z%d",
-                 snapshot->adxl_x_raw,
-                 snapshot->adxl_y_raw,
-                 snapshot->adxl_z_raw);
+                 snapshot->adxl_x_mg,
+                 snapshot->adxl_y_mg,
+                 snapshot->adxl_z_mg);
     } else {
         snprintf(line, sizeof(line), "A X-- Y-- Z--");
     }

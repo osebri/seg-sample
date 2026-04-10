@@ -65,9 +65,10 @@ typedef struct {
     int mq135_delta_raw;
     int mq135_response_pct;
 
-    int16_t adxl_x_raw;
-    int16_t adxl_y_raw;
-    int16_t adxl_z_raw;
+    int16_t adxl_x_mg;
+    int16_t adxl_y_mg;
+    int16_t adxl_z_mg;
+    uint16_t adxl_motion_delta_mg;
 
     sensor_status_t status[SENSOR_ID_COUNT];
     int64_t boot_time_us;
@@ -111,6 +112,10 @@ void sensor_registry_update_mq135(int filtered_raw,
                                   int delta_raw,
                                   int response_pct,
                                   sensor_state_t state);
-void sensor_registry_update_adxl345(int16_t x_raw, int16_t y_raw, int16_t z_raw, sensor_state_t state);
+void sensor_registry_update_adxl345(int16_t x_mg,
+                                    int16_t y_mg,
+                                    int16_t z_mg,
+                                    uint16_t motion_delta_mg,
+                                    sensor_state_t state);
 
 void sensor_registry_get_snapshot(sensor_snapshot_t *out_snapshot);

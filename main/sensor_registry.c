@@ -317,15 +317,20 @@ void sensor_registry_update_mq135(int filtered_raw,
     sensor_registry_unlock();
 }
 
-void sensor_registry_update_adxl345(int16_t x_raw, int16_t y_raw, int16_t z_raw, sensor_state_t state)
+void sensor_registry_update_adxl345(int16_t x_mg,
+                                    int16_t y_mg,
+                                    int16_t z_mg,
+                                    uint16_t motion_delta_mg,
+                                    sensor_state_t state)
 {
     if (!sensor_registry_lock()) {
         return;
     }
 
-    s_snapshot.adxl_x_raw = x_raw;
-    s_snapshot.adxl_y_raw = y_raw;
-    s_snapshot.adxl_z_raw = z_raw;
+    s_snapshot.adxl_x_mg = x_mg;
+    s_snapshot.adxl_y_mg = y_mg;
+    s_snapshot.adxl_z_mg = z_mg;
+    s_snapshot.adxl_motion_delta_mg = motion_delta_mg;
     sensor_registry_apply_success_locked(SENSOR_ID_ADXL345, state);
 
     sensor_registry_unlock();
